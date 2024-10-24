@@ -11,7 +11,9 @@ export default function Home() {
   const [isRecording, setIsRecording] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(false);
   const [transcription, setTranscription] = useState<string>("");
+  const [assistantResponse, setAssistantResponse] = useState<string>("");
   const [visualizerData, setVisualizerData] = useState<number[]>(
     new Array(50).fill(0)
   );
@@ -22,6 +24,8 @@ export default function Home() {
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationFrameRef = useRef<number>();
   const audioChunksRef = useRef<Blob[]>([]);
+  const audioQueueRef = useRef<Array<ArrayBuffer>>([]);
+  const isProcessingAudioRef = useRef(false);
 
   useEffect(() => {
     connectWebSocket();
@@ -55,6 +59,28 @@ export default function Home() {
       mediaRecorderRef.current = null;
     }
     audioChunksRef.current = [];
+    audioQueueRef.current = [];
+  };
+
+  const playResponseAudio = async (audioBuffer: ArrayBuffer) => {
+    try {
+      const audioContext = new AudioContext();
+      const source = audioContext.createBufferSource();
+      const audioData = await audioContext.decodeAudioData(audioBuffer);
+      source.buffer = audioData;
+      source.connect(audioContext.destination);
+      setIsPlaying(true);
+
+      source.onended = () => {
+        setIsPlaying(false);
+        audioContext.close();
+      };
+
+      source.start(0);
+    } catch (error) {
+      console.error("Error playing audio response:", error);
+      setIsPlaying(false);
+    }
   };
 
   const connectWebSocket = () => {
@@ -78,10 +104,21 @@ export default function Home() {
 
     ws.onmessage = async (event) => {
       try {
+        // Handle binary audio data
+        if (event.data instanceof Blob) {
+          const audioBuffer = await event.data.arrayBuffer();
+          playResponseAudio(audioBuffer);
+          return;
+        }
+
+        // Handle JSON messages
         const data = JSON.parse(event.data);
+
         if (data.type === "transcription") {
           setTranscription(data.text);
           setIsSending(false);
+        } else if (data.type === "response") {
+          setAssistantResponse(data.text);
         } else if (data.type === "error") {
           console.error("Server error:", data.message);
           setIsSending(false);
@@ -157,7 +194,6 @@ export default function Home() {
         },
       });
 
-      // Set up audio context and analyzer for visualization
       audioContextRef.current = new AudioContext();
       analyserRef.current = audioContextRef.current.createAnalyser();
       const source = audioContextRef.current.createMediaStreamSource(stream);
@@ -175,7 +211,6 @@ export default function Home() {
       };
       updateVisualizer();
 
-      // Initialize MediaRecorder
       mediaRecorderRef.current = new MediaRecorder(stream, {
         mimeType: "audio/webm;codecs=opus",
       });
@@ -198,6 +233,7 @@ export default function Home() {
       mediaRecorderRef.current.start(100);
       setIsRecording(true);
       setTranscription("");
+      setAssistantResponse("");
     } catch (error) {
       console.error("Error starting recording:", error);
       cleanupAudio();
@@ -231,10 +267,10 @@ export default function Home() {
           <div className="space-y-8">
             <div className="text-center space-y-2">
               <h1 className="text-4xl font-bold tracking-tight">
-                Voice Transcription
+                Voice Assistant
               </h1>
               <p className="text-muted-foreground">
-                Record your message and get instant transcription
+                Have a conversation with your AI assistant
               </p>
             </div>
 
@@ -252,7 +288,7 @@ export default function Home() {
 
             <VoiceControls
               isRecording={isRecording}
-              isPlaying={false}
+              isPlaying={isPlaying}
               onRecordToggle={handleRecordToggle}
             />
 
@@ -263,8 +299,24 @@ export default function Home() {
             )}
 
             {transcription && (
-              <div className="p-4 bg-muted rounded-lg">
-                <p className="text-sm text-muted-foreground">{transcription}</p>
+              <div className="space-y-4">
+                <div className="p-4 bg-muted rounded-lg">
+                  <p className="text-sm font-medium mb-1">You said:</p>
+                  <p className="text-sm text-muted-foreground">
+                    {transcription}
+                  </p>
+                </div>
+
+                {assistantResponse && (
+                  <div className="p-4 bg-primary/10 rounded-lg">
+                    <p className="text-sm font-medium mb-1">
+                      Assistant response:
+                    </p>
+                    <p className="text-sm text-muted-foreground">
+                      {assistantResponse}
+                    </p>
+                  </div>
+                )}
               </div>
             )}
 
